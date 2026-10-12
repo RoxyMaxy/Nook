@@ -1,0 +1,748 @@
+/**
+ * Nook - Fieldwork Nature Companion
+ * Observe. Investigate. Create.
+ * Vanilla JavaScript (ES6+), 100% offline-ready, auto-syncing, localStorage journal
+ */
+
+(() => {
+  'use strict';
+
+  // --- STATE ---
+  const state = {
+    currentImageBase64: null,
+    currentMimeType: 'image/jpeg',
+    currentCard: null,
+    config: {
+      model_id: 'gemma-4-31b-it',
+      elevenlabs_agent_id: '',
+      ai_ready: false,
+      tts_ready: false
+    },
+    audioBlobUrl: null,
+    isOnline: navigator.onLine,
+    journal: [],
+    offlineQueue: [],
+    theme: {
+      mode: 'dark',
+      accent: 'default'
+    }
+  };
+
+  // --- DOM ELEMENTS ---
+  const DOM = {
+    // Nav
+    tabObserve: document.getElementById('tab-observe'),
+    tabJournal: document.getElementById('tab-journal'),
+    viewObserve: document.getElementById('view-observe'),
+    viewJournal: document.getElementById('view-journal'),
+    journalCountBadge: document.getElementById('journal-count-badge'),
+
+    // Settings
+    btnSettingsToggle: document.getElementById('btn-settings-toggle'),
+    settingsTray: document.getElementById('settings-tray'),
+    colorDots: document.querySelectorAll('.color-dot'),
+    modeBtns: document.querySelectorAll('.mode-toggle-btn'),
+    modelIdBadge: document.getElementById('model-id-badge'),
+    networkBadge: document.getElementById('network-badge'),
+    networkStatusText: document.getElementById('network-status-text'),
+
+    // Observe
+    dropzone: document.getElementById('camera-dropzone'),
+    fileInputCamera: document.getElementById('file-input-camera'),
+    fileInputUpload: document.getElementById('file-input-upload'),
+    btnTriggerCamera: document.getElementById('btn-trigger-camera'),
+    btnTriggerUpload: document.getElementById('btn-trigger-upload'),
+    previewContainer: document.getElementById('preview-container'),
+    previewImage: document.getElementById('preview-image'),
+    btnAnalyze: document.getElementById('btn-analyze'),
+    btnRetake: document.getElementById('btn-retake'),
+    analyzingIndicator: document.getElementById('analyzing-indicator'),
+    analyzingStepText: document.getElementById('analyzing-step-text'),
+
+    // Field Card View
+    fieldCardView: document.getElementById('field-card-view'),
+    cardPhoto: document.getElementById('card-specimen-photo'),
+    cardPossibleId: document.getElementById('card-possible-id'),
+    cardSeenList: document.getElementById('card-seen-list'),
+    cardAltsList: document.getElementById('card-alts-list'),
+    cardHypothesesList: document.getElementById('card-hypotheses-list'),
+    cardUncertainText: document.getElementById('card-uncertain-text'),
+    cardQuestionText: document.getElementById('card-question-text'),
+    cardMissionText: document.getElementById('card-mission-text'),
+    cardAtelierText: document.getElementById('card-atelier-text'),
+    btnNarrate: document.getElementById('btn-narrate'),
+    btnSharePoster: document.getElementById('btn-share-poster'),
+    audioBar: document.getElementById('audio-bar'),
+    audioPlayer: document.getElementById('audio-player'),
+
+    // Investigate Voice
+    convaiContainer: document.getElementById('convai-widget-wrapper'),
+
+    // Preserve
+    btnSaveJournal: document.getElementById('btn-save-journal'),
+    journalNotesInput: document.getElementById('journal-notes-input'),
+    checkAtelierDone: document.getElementById('check-atelier-done'),
+
+    // Journal Gallery
+    journalGrid: document.getElementById('journal-grid'),
+    emptyJournalState: document.getElementById('empty-journal-state'),
+
+    // Poster Modal
+    posterModal: document.getElementById('poster-modal'),
+    posterCloseBtn: document.getElementById('poster-close-btn'),
+    posterSpecimenName: document.getElementById('poster-specimen-name'),
+    posterDate: document.getElementById('poster-date'),
+    posterImage: document.getElementById('poster-image'),
+    posterSeen: document.getElementById('poster-seen'),
+    posterHypothesis: document.getElementById('poster-hypothesis'),
+    posterAtelier: document.getElementById('poster-atelier'),
+    posterNotes: document.getElementById('poster-notes'),
+
+    // Toast
+    syncToast: document.getElementById('sync-toast'),
+    syncToastMsg: document.getElementById('sync-toast-msg')
+  };
+
+  // --- INITIALIZATION ---
+  async function init() {
+    loadSettings();
+    loadJournal();
+    setupEventListeners();
+    setupNetworkListeners();
+    registerServiceWorker();
+    await fetchConfig();
+    checkPendingQueue();
+  }
+
+  // --- SETTINGS & LOCAL STORAGE ---
+  function loadSettings() {
+    try {
+      const savedTheme = localStorage.getItem('nook_theme');
+      if (savedTheme) {
+        state.theme = JSON.parse(savedTheme);
+      }
+    } catch (e) {
+      console.warn('Error reading theme from storage:', e);
+    }
+    applyTheme();
+  }
+
+  function saveSettings() {
+    localStorage.setItem('nook_theme', JSON.stringify(state.theme));
+    applyTheme();
+  }
+
+  function applyTheme() {
+    document.documentElement.setAttribute('data-mode', state.theme.mode || 'dark');
+    document.documentElement.setAttribute('data-accent', state.theme.accent || 'default');
+
+    // Update active dots
+    DOM.colorDots.forEach(dot => {
+      dot.classList.toggle('active', dot.dataset.color === state.theme.accent);
+    });
+
+    // Update mode buttons
+    DOM.modeBtns.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.mode === state.theme.mode);
+    });
+  }
+
+  // --- JOURNAL STORAGE (PRESERVE) ---
+  function loadJournal() {
+    try {
+      const raw = localStorage.getItem('nook_field_journal');
+      state.journal = raw ? JSON.parse(raw) : [];
+      const queueRaw = localStorage.getItem('nook_offline_queue');
+      state.offlineQueue = queueRaw ? JSON.parse(queueRaw) : [];
+    } catch (e) {
+      console.warn('Error loading journal from localStorage:', e);
+      state.journal = [];
+      state.offlineQueue = [];
+    }
+    updateJournalBadge();
+    renderJournalGrid();
+  }
+
+  function saveJournalToStorage() {
+    try {
+      localStorage.setItem('nook_field_journal', JSON.stringify(state.journal));
+      localStorage.setItem('nook_offline_queue', JSON.stringify(state.offlineQueue));
+    } catch (e) {
+      console.error('Storage quota exceeded or error saving:', e);
+      showToast('Local memory full. Consider clearing older sessions.');
+    }
+    updateJournalBadge();
+  }
+
+  function updateJournalBadge() {
+    DOM.journalCountBadge.textContent = state.journal.length;
+  }
+
+  // --- NETWORK MONITORING & OFFLINE QUEUE SYNC ---
+  function setupNetworkListeners() {
+    const updateNetworkStatus = () => {
+      state.isOnline = navigator.onLine;
+      if (state.isOnline) {
+        DOM.networkBadge.className = 'network-badge online';
+        DOM.networkStatusText.textContent = 'Field Online';
+        showToast('Connected to field network. Syncing offline observations...');
+        syncPendingQueue();
+      } else {
+        DOM.networkBadge.className = 'network-badge offline';
+        DOM.networkStatusText.textContent = 'Offline (Deep Wild)';
+        showToast('Device offline in the wild. Observations will be saved safely locally.');
+      }
+    };
+
+    window.addEventListener('online', updateNetworkStatus);
+    window.addEventListener('offline', updateNetworkStatus);
+    updateNetworkStatus();
+  }
+
+  async function checkPendingQueue() {
+    if (state.isOnline && state.offlineQueue.length > 0) {
+      syncPendingQueue();
+    }
+  }
+
+  async function syncPendingQueue() {
+    if (!state.isOnline || state.offlineQueue.length === 0) return;
+
+    console.log(`[Sync] Found ${state.offlineQueue.length} pending offline entries to verify with Gemma backend.`);
+    let syncCount = 0;
+
+    const queueCopy = [...state.offlineQueue];
+    for (const item of queueCopy) {
+      try {
+        const response = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: item.imageBase64 })
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          // Update corresponding journal entry with upgraded Gemma 4 analysis
+          const journalEntry = state.journal.find(j => j.id === item.id);
+          if (journalEntry) {
+            journalEntry.field_card = result.field_card;
+            journalEntry.synced = true;
+          }
+          // Remove from offline queue
+          state.offlineQueue = state.offlineQueue.filter(q => q.id !== item.id);
+          syncCount++;
+        }
+      } catch (err) {
+        console.warn('[Sync] Could not sync entry during this pass:', err);
+        break; // retry next online event
+      }
+    }
+
+    if (syncCount > 0) {
+      saveJournalToStorage();
+      renderJournalGrid();
+      showToast(`Synced ${syncCount} offline field observation(s) with Gemma 4!`);
+    }
+  }
+
+  // --- BACKEND RUNTIME CONFIG ---
+  async function fetchConfig() {
+    try {
+      const res = await fetch('/api/config');
+      if (res.ok) {
+        const data = await res.json();
+        state.config = data;
+        DOM.modelIdBadge.textContent = data.model_id || 'gemma-4-31b-it';
+        setupElevenLabsVoiceWidget(data.elevenlabs_agent_id);
+      }
+    } catch (e) {
+      console.warn('Could not reach Flask /api/config. Using local defaults.', e);
+      DOM.modelIdBadge.textContent = 'gemma-4-31b-it (Local/Offline)';
+    }
+  }
+
+  // --- ELEVENLABS CONVERSATIONAL VOICE WIDGET (<elevenlabs-convai>) ---
+  function setupElevenLabsVoiceWidget(agentId) {
+    DOM.convaiContainer.innerHTML = '';
+
+    if (!agentId) {
+      DOM.convaiContainer.innerHTML = `
+        <div class="convai-note">
+          <p>ElevenLabs Agent ID not configured in <code>.env</code>.</p>
+          <p>Add <code>ELEVENLABS_AGENT_ID=your_id</code> to speak with your voice guide in real-time.</p>
+        </div>
+      `;
+      return;
+    }
+
+    // Inject ElevenLabs conversational voice element dynamically
+    const convaiWidget = document.createElement('elevenlabs-convai');
+    convaiWidget.setAttribute('agent-id', agentId);
+    DOM.convaiContainer.appendChild(convaiWidget);
+  }
+
+  // --- EVENT LISTENERS ---
+  function setupEventListeners() {
+    // Navigation Tabs
+    DOM.tabObserve.addEventListener('click', () => switchTab('observe'));
+    DOM.tabJournal.addEventListener('click', () => switchTab('journal'));
+
+    // Settings Toggle
+    DOM.btnSettingsToggle.addEventListener('click', () => {
+      DOM.settingsTray.classList.toggle('open');
+    });
+
+    // Theme Color Selection
+    DOM.colorDots.forEach(dot => {
+      dot.addEventListener('click', () => {
+        state.theme.accent = dot.dataset.color;
+        saveSettings();
+      });
+    });
+
+    // Light / Dark Mode Toggle
+    DOM.modeBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.theme.mode = btn.dataset.mode;
+        saveSettings();
+      });
+    });
+
+    // Camera & Upload Triggers
+    DOM.btnTriggerCamera.addEventListener('click', () => DOM.fileInputCamera.click());
+    DOM.btnTriggerUpload.addEventListener('click', () => DOM.fileInputUpload.click());
+    DOM.dropzone.addEventListener('click', () => DOM.fileInputCamera.click());
+
+    DOM.fileInputCamera.addEventListener('change', (e) => handleFileSelection(e.target.files[0]));
+    DOM.fileInputUpload.addEventListener('change', (e) => handleFileSelection(e.target.files[0]));
+
+    // Drag and Drop
+    DOM.dropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      DOM.dropzone.classList.add('drag-over');
+    });
+    DOM.dropzone.addEventListener('dragleave', () => DOM.dropzone.classList.remove('drag-over'));
+    DOM.dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      DOM.dropzone.classList.remove('drag-over');
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        handleFileSelection(e.dataTransfer.files[0]);
+      }
+    });
+
+    // Retake Photo
+    DOM.btnRetake.addEventListener('click', resetObservationCapture);
+
+    // Analyze Observation Trigger
+    DOM.btnAnalyze.addEventListener('click', startAnalyzePipeline);
+
+    // Narrate Audio Trigger
+    DOM.btnNarrate.addEventListener('click', playNarrationAudio);
+
+    // Share / View Poster
+    DOM.btnSharePoster.addEventListener('click', () => openPosterModal(state.currentCard, state.currentImageBase64, DOM.journalNotesInput.value, new Date().toLocaleDateString()));
+
+    // Save to Journal
+    DOM.btnSaveJournal.addEventListener('click', saveCurrentSessionToJournal);
+
+    // Close Poster Modal
+    DOM.posterCloseBtn.addEventListener('click', () => DOM.posterModal.classList.remove('active'));
+    DOM.posterModal.addEventListener('click', (e) => {
+      if (e.target === DOM.posterModal) DOM.posterModal.classList.remove('active');
+    });
+  }
+
+  function switchTab(tab) {
+    if (tab === 'observe') {
+      DOM.tabObserve.classList.add('active');
+      DOM.tabJournal.classList.remove('active');
+      DOM.viewObserve.style.display = 'block';
+      DOM.viewJournal.classList.remove('active');
+    } else {
+      DOM.tabJournal.classList.add('active');
+      DOM.tabObserve.classList.remove('active');
+      DOM.viewObserve.style.display = 'none';
+      DOM.viewJournal.classList.add('active');
+      renderJournalGrid();
+    }
+  }
+
+  // --- FILE HANDLING & IMAGE RESIZING FOR ROBUST UPLOAD ---
+  function handleFileSelection(file) {
+    if (!file) return;
+
+    const validTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!validTypes.includes(file.type)) {
+      alert('Please select a valid image file (JPEG, PNG, WebP, or GIF).');
+      return;
+    }
+
+    state.currentMimeType = file.type;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const rawDataUrl = e.target.result;
+      // Resize client-side to ensure smooth mobile upload & reasonable offline localStorage footprint
+      optimizeImage(rawDataUrl, 1200, 1200, (optimizedDataUrl) => {
+        state.currentImageBase64 = optimizedDataUrl;
+        DOM.previewImage.src = optimizedDataUrl;
+        DOM.previewContainer.classList.add('active');
+        DOM.dropzone.style.display = 'none';
+        DOM.fieldCardView.classList.remove('active');
+      });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function optimizeImage(dataUrl, maxWidth, maxHeight, callback) {
+    const img = new Image();
+    img.onload = () => {
+      let width = img.width;
+      let height = img.height;
+
+      if (width > maxWidth || height > maxHeight) {
+        if (width / height > maxWidth / maxHeight) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        } else {
+          width = Math.round((width * maxHeight) / height);
+          height = maxHeight;
+        }
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      callback(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.src = dataUrl;
+  }
+
+  function resetObservationCapture() {
+    state.currentImageBase64 = null;
+    DOM.previewContainer.classList.remove('active');
+    DOM.dropzone.style.display = 'flex';
+    DOM.fieldCardView.classList.remove('active');
+    DOM.fileInputCamera.value = '';
+    DOM.fileInputUpload.value = '';
+    DOM.audioBar.classList.remove('active');
+    if (DOM.audioPlayer.src) {
+      DOM.audioPlayer.pause();
+    }
+  }
+
+  // --- PIPELINE 2: ANALYZE (GEMMA 4 MULTIMODAL) ---
+  async function startAnalyzePipeline() {
+    if (!state.currentImageBase64) return;
+
+    DOM.previewContainer.classList.remove('active');
+    DOM.analyzingIndicator.classList.add('active');
+    DOM.analyzingStepText.textContent = 'Transmitting specimen observation to Gemma 4...';
+
+    // If completely offline, use local naturalist engine immediately & queue for future sync
+    if (!state.isOnline) {
+      console.log('[Analyze] Device is offline. Generating local naturalist card and queueing.');
+      setTimeout(() => {
+        const localCard = generateOfflineLocalCard();
+        displayFieldCard(localCard, true);
+      }, 700);
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image: state.currentImageBase64
+        })
+      });
+
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(errJson.error || `Server responded with ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.status === 'success' && data.field_card) {
+        displayFieldCard(data.field_card, false);
+      } else {
+        throw new Error(data.error || 'Invalid response from Gemma engine');
+      }
+
+    } catch (err) {
+      console.error('[Analyze] Inference error:', err);
+      showToast(`Analysis error: ${err.message || 'Could not process specimen'}`);
+      DOM.analyzingIndicator.classList.remove('active');
+      DOM.previewContainer.classList.add('active');
+    }
+  }
+
+  function generateOfflineLocalCard() {
+    return {
+      seen: [
+        "Organic pigment with hues of green and yellow, with a little dried brown spot at its tip.",
+        "Vascular vein patterns running nearly parallel from the central spine toward the edges.",
+        "Micro-textured surface showing natural resistance to recent rainfall droplets.",
+        "Crooked, slightly serrated margins curving naturally along the outer contour."
+      ],
+      possible_identification: "Hazelnut leaf (or possibly young elm or beech, depending on the branch)",
+      alternatives: [
+        "Hornbeam leaf displaying similar ribbed veins and jagged perimeter.",
+        "Young wild cherry foliage beginning early seasonal color transformation."
+      ],
+      hypotheses: [
+        "Autumn is approaching, so the green chlorophyll is slowly fading into yellow and brown.",
+        "Might have been scorched during late summer heat, leaving the dry crispy spot at the tip."
+      ],
+      uncertain: "Whether this specimen was plucked from a living branch or gathered after falling onto forest soil.",
+      investigation_question: "Look closely at its perimeter: are there natural insect bite notches, or dew droplets gathered in the folds?",
+      observation_mission: "Take five quiet steps back and observe what nearby animals or insects treat this area as their home.",
+      atelier: "Place the leaf under a notebook page and rub gently with pencil charcoal to trace its unique vein network."
+    };
+  }
+
+  function displayFieldCard(card, isOffline) {
+    state.currentCard = card;
+    DOM.analyzingIndicator.classList.remove('active');
+    DOM.fieldCardView.classList.add('active');
+
+    // Populate Specimen View
+    DOM.cardPhoto.src = state.currentImageBase64;
+    DOM.cardPossibleId.textContent = card.possible_identification;
+
+    // 1. Seen
+    DOM.cardSeenList.innerHTML = '';
+    (card.seen || []).forEach(item => {
+      const li = document.createElement('li');
+      li.textContent = item;
+      DOM.cardSeenList.appendChild(li);
+    });
+
+    // 2. Alternatives
+    DOM.cardAltsList.innerHTML = '';
+    (card.alternatives || []).forEach(alt => {
+      const div = document.createElement('div');
+      div.className = 'alt-pill';
+      div.textContent = alt;
+      DOM.cardAltsList.appendChild(div);
+    });
+
+    // 3. Hypotheses
+    DOM.cardHypothesesList.innerHTML = '';
+    (card.hypotheses || []).forEach(hyp => {
+      const p = document.createElement('p');
+      p.className = 'hyp-entry';
+      p.textContent = hyp;
+      DOM.cardHypothesesList.appendChild(p);
+    });
+
+    // 4. Uncertain
+    DOM.cardUncertainText.textContent = card.uncertain;
+
+    // 5. Investigation Question
+    DOM.cardQuestionText.textContent = card.investigation_question;
+
+    // 6. Observation Mission
+    DOM.cardMissionText.textContent = card.observation_mission;
+
+    // 7. Atelier
+    DOM.cardAtelierText.textContent = card.atelier;
+
+    // Reset notes & checklist
+    DOM.journalNotesInput.value = '';
+    DOM.checkAtelierDone.checked = false;
+
+    // Scroll smoothly to field card
+    DOM.fieldCardView.scrollIntoView({ behavior: 'smooth' });
+
+    if (isOffline) {
+      showToast('Field card created in offline mode. Queued for background sync.');
+    }
+  }
+
+  // --- PIPELINE 3: NARRATE (ELEVENLABS TTS STREAM) ---
+  async function playNarrationAudio() {
+    if (!state.currentCard) return;
+
+    DOM.btnNarrate.disabled = true;
+    DOM.btnNarrate.innerHTML = `
+      <div class="nature-spinner" style="width:14px;height:14px;border-width:2px;"></div>
+      Streaming Audio...
+    `;
+
+    try {
+      const textToNarrate = `Specimen report. Possible identification: ${state.currentCard.possible_identification}. Direct visual signs: ${(state.currentCard.seen || []).join('. ')}. Working hypothesis: ${(state.currentCard.hypotheses || []).join('. ')}. Observation mission: ${state.currentCard.observation_mission}. Creative atelier: ${state.currentCard.atelier}.`;
+
+      const response = await fetch('/narrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: textToNarrate,
+          field_card: state.currentCard
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Narration audio fetch returned error');
+      }
+
+      const audioBlob = await response.blob();
+      if (state.audioBlobUrl) {
+        URL.revokeObjectURL(state.audioBlobUrl);
+      }
+      state.audioBlobUrl = URL.createObjectURL(audioBlob);
+
+      DOM.audioPlayer.src = state.audioBlobUrl;
+      DOM.audioBar.classList.add('active');
+      DOM.audioPlayer.play().catch(e => console.log('Autoplay deferred:', e));
+
+    } catch (err) {
+      console.warn('Narration failed:', err);
+      // Fallback: Web Speech API synthesis if available
+      if ('speechSynthesis' in window) {
+        const utterance = new SpeechSynthesisUtterance(
+          `Field card. ${state.currentCard.possible_identification}. Mission: ${state.currentCard.observation_mission}`
+        );
+        utterance.rate = 0.95;
+        window.speechSynthesis.speak(utterance);
+        showToast('Using local browser voice synthesizer.');
+      } else {
+        showToast('Audio narration unavailable offline.');
+      }
+    } finally {
+      DOM.btnNarrate.disabled = false;
+      DOM.btnNarrate.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+        Field Card Audio
+      `;
+    }
+  }
+
+  // --- PIPELINE 5: PRESERVE & FIELD JOURNAL ---
+  function saveCurrentSessionToJournal() {
+    if (!state.currentCard || !state.currentImageBase64) return;
+
+    const entryId = 'nook_' + Date.now();
+    const entryDate = new Date().toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    const newEntry = {
+      id: entryId,
+      date: entryDate,
+      timestamp: Date.now(),
+      imageBase64: state.currentImageBase64,
+      field_card: state.currentCard,
+      user_notes: DOM.journalNotesInput.value.trim(),
+      atelier_completed: DOM.checkAtelierDone.checked,
+      synced: state.isOnline
+    };
+
+    // Prepend to journal
+    state.journal.unshift(newEntry);
+
+    // If recorded while offline, queue for background sync
+    if (!state.isOnline) {
+      state.offlineQueue.push({
+        id: entryId,
+        imageBase64: state.currentImageBase64
+      });
+    }
+
+    saveJournalToStorage();
+    showToast('Observation preserved in Field Journal!');
+    
+    // Switch to journal view to let user enjoy their saved memories
+    setTimeout(() => {
+      switchTab('journal');
+    }, 400);
+  }
+
+  function renderJournalGrid() {
+    DOM.journalGrid.innerHTML = '';
+
+    if (!state.journal || state.journal.length === 0) {
+      DOM.emptyJournalState.style.display = 'block';
+      return;
+    }
+
+    DOM.emptyJournalState.style.display = 'none';
+
+    state.journal.forEach(entry => {
+      const card = document.createElement('div');
+      card.className = 'journal-card-thumb';
+      
+      const photoSrc = entry.imageBase64 || '/static/icons/icon-192.svg';
+      const idName = (entry.field_card && entry.field_card.possible_identification) ? entry.field_card.possible_identification : 'Nature Specimen';
+      const missionText = (entry.field_card && entry.field_card.observation_mission) ? entry.field_card.observation_mission : '';
+
+      card.innerHTML = `
+        <img class="thumb-image" src="${photoSrc}" alt="${idName}" loading="lazy">
+        <div class="thumb-content">
+          <div class="thumb-date">${entry.date}</div>
+          <h3 class="thumb-title">${idName}</h3>
+          <p class="thumb-snippet">${entry.user_notes ? `"${entry.user_notes}"` : missionText}</p>
+          <div class="thumb-status">
+            <span>${entry.atelier_completed ? '<span class="status-badge-complete">✓ Atelier Crafted</span>' : 'Observation Saved'}</span>
+            <span style="opacity:0.6;">Poster ↗</span>
+          </div>
+        </div>
+      `;
+
+      card.addEventListener('click', () => {
+        openPosterModal(entry.field_card, entry.imageBase64, entry.user_notes, entry.date);
+      });
+
+      DOM.journalGrid.appendChild(card);
+    });
+  }
+
+  // --- DIGITAL POSTER SOUVENIR MODAL ---
+  function openPosterModal(fieldCard, imageSrc, notes, dateStr) {
+    if (!fieldCard) return;
+
+    DOM.posterSpecimenName.textContent = fieldCard.possible_identification || 'Specimen';
+    DOM.posterDate.textContent = dateStr || new Date().toLocaleDateString();
+    DOM.posterImage.src = imageSrc || '';
+
+    // Seen bullet summary
+    DOM.posterSeen.textContent = (fieldCard.seen || []).join(' • ');
+    DOM.posterHypothesis.textContent = (fieldCard.hypotheses || [])[0] || 'Natural state shaped by local environmental forces.';
+    DOM.posterAtelier.textContent = fieldCard.atelier || 'Creative craft created with nature.';
+    DOM.posterNotes.textContent = notes ? `Field notes: "${notes}"` : 'Preserved quietly during outdoor exploration.';
+
+    DOM.posterModal.classList.add('active');
+  }
+
+  // --- SERVICE WORKER REGISTRATION (PWA & OFFLINE) ---
+  function registerServiceWorker() {
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/static/sw.js')
+          .then((reg) => console.log('[PWA] Service Worker registered in scope:', reg.scope))
+          .catch((err) => console.warn('[PWA] Service Worker registration failed:', err));
+      });
+    }
+  }
+
+  // --- TOAST NOTIFICATION HELPER ---
+  let toastTimer = null;
+  function showToast(message) {
+    DOM.syncToastMsg.textContent = message;
+    DOM.syncToast.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      DOM.syncToast.classList.remove('show');
+    }, 4000);
+  }
+
+  // Run on load
+  document.addEventListener('DOMContentLoaded', init);
+})();

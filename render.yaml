@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: nook-fieldwork
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: GEMMA_MODEL_ID
+        value: gemma-4-31b-it
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        value: 21m00Tcm4TlvDq8ikWAM
+      - key: ELEVENLABS_AGENT_ID
+        sync: false

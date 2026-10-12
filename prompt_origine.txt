@@ -1,0 +1,67 @@
+You are a senior full-stack developer.
+Design and generate the complete code for a fieldwork web application called "Nook" (with the tagline: Observe. Investigate. Create.). 
+This project is an ecological  application designed  with the open-weight model Gemma 4 at its core framework.
+
+ However, the generated code must be complete, production-grade, and immediately functional, before tokens run out.
+
+FRAMEWORK, RENDERING, AND PORT CONSTRAINTS:
+- The backend application must strictly use FLASK
+- The application must  run locally on its native default port: PORT 5000 (localhost:5000). 
+- The frontend must be served directly by Flask via its static and template folders, using only native HTML5 / CSS3 / Vanilla JavaScript (no separate Node.js frontend server).
+- Provide a configuration file for Render for deployment on their free tier.
+
+AI ENGINE (GEMMA 4 ):
+- The application's core logic depends on API execution or inference of the "gemma-4-31b-it" or "gemma-4-26b-a4b-it" multimodal model.
+- You must use the official new `google-genai` Python SDK to handle all backend AI operations.
+- Configure the default model parameter to use "gemma-4-31b-it", butmake sure it reads from an environment variable `GEMMA_MODEL_ID` (so the user can easily swap it to "gemma-4-26b-a4b-it" via the .env file).
+- The backend must feature full validation and standard JSON parsing structures processing raw output string responses from Gemma safely.
+
+USER STORY: 
+The goal of Nook is to encourage the user to leave their screen and explore nature. 
+This is the code  pipeline:
+1. OBSERVE: A paccessible mobile-first interface (capture="environment") with dark mode posibility). 
+The user snaps or uploads a photo from their phone.
+2. ANALYZE: The Flask receives the image, validates the  type (jpeg, png, webp, gif), encodes it to base64 bytes, and directly queries the l Gemma 4 model using the google-genai client.
+ The prompt sent to Gemma MUST demand a JSON object . The returned JSON must contain (written in a cautious, naturalist tone, max 25 words per string):
+   - "seen": 3 to 6 direct visual observations such as (color, shape, texture).
+   - "possible_identification": The possiblr identification might be still wrong, even if just rarely. It is better to state "possible", not confirming if not sure.
+   - "alternatives": 1 or 2 other plausible options of why something had became what it was when taken photos
+   - "hypotheses": 2 possible explanations regarding the state or origin of the found object
+   - "uncertain": What the photo cannot tell due to its limitations. The AI Asks further questions in the investigation_question
+   - "investigation_question": The AI asks further questions about the found objects for the AI to confirm hypothesis or suggestions, and helps people develop their observation and attention skills.
+   - "observation_mission": An action to do outside immediately without touching or disturbing nature, like following ants' paths to their anthill, or give a rabit a leaf, or caressing barks to feel the relief, etc...
+   - "atelier": A creative crafting task  that should be a concrete, safe action to do , based with the found objects (those can be a herbier with a clover, a drawing of a bark's patterns, a flower crown, a petal coloration, squirrel's best ohotoshoot, a christmas decoration made from pine cones, leaves, etc...).
+3. NARRATE: A Flask endpoint POST /narrate receives the card text and uses the ElevenLabs TTS API (Model: `eleven_turbo_v2_5`, default Voice ID) to return a binar audio/mpeg stream. The JavaScript interface displays a "Field Card " button to fetch and play this audio stream directly in the browser.
+4. INVESTIGATE The interface integrates the official ElevenLabs conversational voice widget (`<elevenlabs-convai>` loaded  via its script) by dynamically injecting the Agent ID. The user speaks to this voice guide in real-time to report their findings after returning from their outdoor mission.
+5. PRESERVE: A field journal saves the session locally (base64 photo, Field Card JSON, atelier completion status, and user text notes) into the browser's localStorage. A history of past journal entries must be displayed upon loading the application, fot the hapiness to find memories back and remember what was learned through the little travel outside;.
+
+SECURITY AND ROBUSTNESS:
+- Strict exception handling with clean Python logging
+- Robust parser helper to sanitize Gemma's JSON string in case it contains accidental markdown backticks (```json ... ```).
+- Full isolation of secrets using an environment file (.env) containing: GOOGLE_API_KEY, GEMMA_MODEL_ID, ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, and optional ElevenLabs voice variables.
+
+STYLE & LAYOUT:
+Make the web app present the theme as following:
+ - Artisanal Minimalism: Clean design without clutter.
+- Smart-Casual Tone: Low pressure, high intention. Cool attitude withpit forgettong the serious execution.
+-  Background: #0F0F11
+-  Primary Text & Headers: #F5F5F7
+-  Secondary Text & Metadata: #86868B
+-  Borders & Dividers: #2C2C2E
+-  Interactiveity and Hover State: #FFFFFF
+Those are by default. But people should be able to choose among lots of color themes (blue, orange, purple, green, etc...) and light or dark theme.
+
+USER PROFILE:
+ Save everything (the user's color themes, options, and nature journal entries) directly inside the browser's memory, never on a distant database. This keeps their data safe and ensures the app works 100% offline.
+
+ONLINE/OFFLINE FUNCTIONALITY:
+- The app must work even with zero internet (like deep in the forest).
+- Create a 'sw.js' file (Service Worker) so the app's pages and designs load offline.
+- If the user takes a photo or finishes a task while offline, save it inside the browser's local memory immediately.
+- As soon as the phone gets internet back, the app must automatically send those saved photos and notes to the Flask backend without making the user refresh the page.
+
+RESULTING JOURNAL:
+The result of PRESERVE user story: a personalized poster, or a little digital journal, according to the user's choices, contains all the result of the functionalities: the taken photo, the description, the possible causes of their state, cool artistic or useful things to craft from the shot objects.
+
+Generate all the necessary files for this application now, ready to be executed on port 5000.
+
